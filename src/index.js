@@ -14,6 +14,7 @@ import { errorHandler } from "./middlewares/errorHandler.js";
 import { logger } from "./utils/logger.js";
 
 // Import routes
+import adminRouter from "./routes/admin.js";
 import applicationRouter from "./routes/applications.js";
 import authRouter from "./routes/auth.js";
 import profileRouter from "./routes/profile.js";
@@ -62,6 +63,7 @@ app.use("/api/auth", authRouter);
 app.use("/api/profile", profileRouter);
 app.use("/api/tasks", taskRouter);
 app.use("/api/applications", applicationRouter);
+app.use("/api/admin", adminRouter);
 
 // Health check route
 app.get("/health", (req, res) => {
