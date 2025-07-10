@@ -109,9 +109,15 @@ export const validateGetTasks = [
  * Validation rules for getting a single task
  */
 export const validateGetTask = [
-  param("id")
-    .isMongoId()
-    .withMessage("Task ID must be a valid MongoDB ObjectId"),
+  param("id").custom((value) => {
+    // Allow either MongoDB ObjectId (24 hex characters) or numeric task ID
+    if (/^[0-9a-fA-F]{24}$/.test(value) || /^\d+$/.test(value)) {
+      return true;
+    }
+    throw new Error(
+      "Task ID must be either a valid MongoDB ObjectId or numeric task ID"
+    );
+  }),
 
   checkValidation,
 ];
