@@ -20,6 +20,16 @@ class EnhancedTaskAPI {
     this.token = null;
   }
 
+  // Get current token
+  getToken() {
+    return this.token;
+  }
+
+  // Check if user is authenticated
+  isAuthenticated() {
+    return !!this.token;
+  }
+
   // Helper method to handle API requests with authentication
   async request(endpoint, options = {}) {
     const url = `${this.baseURL}${endpoint}`;
@@ -86,6 +96,73 @@ class EnhancedTaskAPI {
       console.error("Upload request failed:", error);
       throw error;
     }
+  }
+
+  // ========== AUTHENTICATION METHODS ==========
+
+  // Login user
+  async login(email, password) {
+    const response = await this.request("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    });
+
+    if (response.token) {
+      this.setToken(response.token);
+    }
+
+    return response;
+  }
+
+  // Register user
+  async register(userData) {
+    const response = await this.request("/auth/register", {
+      method: "POST",
+      body: JSON.stringify(userData),
+    });
+
+    if (response.token) {
+      this.setToken(response.token);
+    }
+
+    return response;
+  }
+
+  // Logout user
+  async logout() {
+    try {
+      await this.request("/auth/logout", {
+        method: "POST",
+      });
+    } finally {
+      this.removeToken();
+    }
+  }
+
+  // ========== PROFILE METHODS ==========
+
+  // Get user profile
+  async getProfile() {
+    const response = await this.request("/profile");
+    return response.data;
+  }
+
+  // Update user profile
+  async updateProfile(profileData) {
+    const response = await this.request("/profile", {
+      method: "PUT",
+      body: JSON.stringify(profileData),
+    });
+    return response.data;
+  }
+
+  // Upload profile image
+  async uploadProfileImage(imageFile) {
+    const formData = new FormData();
+    formData.append("image", imageFile);
+
+    const response = await this.uploadRequest("/profile/image", formData);
+    return response.data;
   }
 
   // ========== EXISTING TASK METHODS ==========
