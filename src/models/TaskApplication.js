@@ -15,9 +15,17 @@ const taskApplicationSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: {
-        values: ["pending", "accepted", "rejected", "completed", "cancelled"],
+        values: [
+          "pending",
+          "accepted",
+          "rejected",
+          "submitted",
+          "completed",
+          "needs_revision",
+          "cancelled",
+        ],
         message:
-          "Status must be one of: pending, accepted, rejected, completed, cancelled",
+          "Status must be one of: pending, accepted, rejected, submitted, completed, needs_revision, cancelled",
       },
       default: "pending",
     },
@@ -65,6 +73,24 @@ const taskApplicationSchema = new mongoose.Schema(
       min: 0,
       max: 100,
       default: 0,
+    },
+    // Admin review for submissions
+    adminReview: {
+      reviewedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+      },
+      reviewedAt: Date,
+      status: {
+        type: String,
+        enum: ["pending", "accepted", "needs_revision"],
+        default: "pending",
+      },
+      comments: {
+        type: String,
+        trim: true,
+        maxLength: [1000, "Review comments cannot exceed 1000 characters"],
+      },
     },
     // Client feedback
     feedback: {
@@ -160,7 +186,7 @@ taskApplicationSchema.statics.getUserApplicationStats = async function (
 
 // Instance method to check if user can submit files
 taskApplicationSchema.methods.canSubmitFiles = function () {
-  return this.status === "accepted" || this.status === "pending";
+  return this.status === "accepted" || this.status === "needs_revision";
 };
 
 // Instance method to check if application is active

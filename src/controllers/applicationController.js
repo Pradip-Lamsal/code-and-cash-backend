@@ -295,6 +295,11 @@ export const submitFiles = catchAsync(async (req, res, next) => {
     // Add files to application submissions
     application.submissions.push(...fileInfo);
 
+    // Update status to submitted when files are uploaded
+    if (application.status === "accepted") {
+      application.status = "submitted";
+    }
+
     // Update progress if this is the first submission
     if (application.progress === 0) {
       application.progress = 25;

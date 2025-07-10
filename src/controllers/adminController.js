@@ -2,7 +2,9 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import Task from "../models/Task.js";
+import TaskApplication from "../models/TaskApplication.js";
 import User from "../models/User.js";
+import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import { logger } from "../utils/logger.js";
 
@@ -257,35 +259,26 @@ export const getUserSubmissions = catchAsync(async (req, res) => {
     });
   }
 
-  const submissions = await Task.aggregate([
-    { $unwind: "$submissions" },
-    { $match: { "submissions.user": userId } },
-    {
-      $project: {
-        taskId: "$_id",
-        taskTitle: "$title",
-        taskCategory: "$category",
-        taskPayout: "$payout",
-        submissionId: "$submissions._id",
-        submissionFile: "$submissions.file",
-        submissionDate: "$submissions.submittedAt",
-        submissionStatus: "$submissions.status",
-        feedback: "$submissions.feedback",
-      },
-    },
-    { $sort: { submissionDate: -1 } },
-  ]);
+  const applications = await TaskApplication.find({ userId })
+    .populate("taskId", "title category payout clientId")
+    .populate("userId", "name email")
+    .sort({ updatedAt: -1 });
+
+  // Filter applications that have submissions
+  const applicationsWithSubmissions = applications.filter(
+    (app) => app.submissions && app.submissions.length > 0
+  );
 
   logger.info(
-    `📋 Admin ${req.user.email} retrieved ${submissions.length} submissions for user ${user.name}`
+    `📋 Admin ${req.user.email} retrieved ${applicationsWithSubmissions.length} applications with submissions for user ${user.name}`
   );
 
   res.status(200).json({
     status: "success",
     data: {
       user,
-      submissions,
-      total: submissions.length,
+      applications: applicationsWithSubmissions,
+      total: applicationsWithSubmissions.length,
     },
   });
 });
@@ -294,17 +287,20 @@ export const getUserSubmissions = catchAsync(async (req, res) => {
  * Download submission file
  */
 export const downloadSubmissionFile = catchAsync(async (req, res) => {
-  const { submissionId } = req.params;
+  const { applicationId, submissionId } = req.params;
 
-  const task = await Task.findOne({ "submissions._id": submissionId });
-  if (!task) {
+  const application = await TaskApplication.findById(applicationId)
+    .populate("taskId", "title")
+    .populate("userId", "name email");
+
+  if (!application) {
     return res.status(404).json({
       status: "error",
-      message: "Submission not found",
+      message: "Application not found",
     });
   }
 
-  const submission = task.submissions.id(submissionId);
+  const submission = application.submissions.id(submissionId);
   if (!submission) {
     return res.status(404).json({
       status: "error",
@@ -312,14 +308,7 @@ export const downloadSubmissionFile = catchAsync(async (req, res) => {
     });
   }
 
-  const filePath = path.join(
-    __dirname,
-    "..",
-    "..",
-    "uploads",
-    "submissions",
-    submission.file
-  );
+  const filePath = path.join(__dirname, "..", "..", submission.path);
 
   if (!fs.existsSync(filePath)) {
     return res.status(404).json({
@@ -329,67 +318,71 @@ export const downloadSubmissionFile = catchAsync(async (req, res) => {
   }
 
   logger.info(
-    `📥 Admin ${req.user.email} downloaded submission file: ${submission.file}`
+    `📥 Admin ${req.user.email} downloaded submission file: ${submission.originalName} from application ${applicationId}`
   );
 
-  res.download(filePath, submission.file);
+  res.download(filePath, submission.originalName);
 });
 
 /**
- * Update task submission status
+ * Review and update application submission status
  */
-export const updateTaskSubmissionStatus = catchAsync(async (req, res) => {
-  const { submissionId } = req.params;
-  const { status, feedback } = req.body;
+export const reviewApplicationSubmission = catchAsync(async (req, res) => {
+  const { applicationId } = req.params;
+  const { status, comments } = req.body;
 
-  const validStatuses = ["pending", "submitted", "approved", "rejected"];
+  const validStatuses = ["accepted", "needs_revision"];
   if (!validStatuses.includes(status)) {
     return res.status(400).json({
       status: "error",
-      message:
-        "Invalid status. Must be one of: pending, submitted, approved, rejected",
+      message: "Invalid status. Must be one of: accepted, needs_revision",
     });
   }
 
-  const task = await Task.findOne({ "submissions._id": submissionId });
-  if (!task) {
+  const application = await TaskApplication.findById(applicationId)
+    .populate("taskId", "title")
+    .populate("userId", "name email");
+
+  if (!application) {
     return res.status(404).json({
       status: "error",
-      message: "Submission not found",
+      message: "Application not found",
     });
   }
 
-  const submission = task.submissions.id(submissionId);
-  if (!submission) {
-    return res.status(404).json({
+  if (application.status !== "submitted") {
+    return res.status(400).json({
       status: "error",
-      message: "Submission not found",
+      message: "Application must be in submitted status to be reviewed",
     });
   }
 
-  // Update submission status
-  submission.status = status;
-  if (feedback) {
-    submission.feedback = feedback;
-  }
-  submission.reviewedAt = new Date();
-  submission.reviewedBy = req.user._id;
+  // Update application status based on review
+  application.status = status === "accepted" ? "completed" : "needs_revision";
 
-  await task.save();
+  // Update admin review information
+  application.adminReview = {
+    reviewedBy: req.user._id,
+    reviewedAt: new Date(),
+    status: status,
+    comments: comments || "",
+  };
+
+  await application.save();
 
   logger.info(
-    `✅ Admin ${req.user.email} updated submission ${submissionId} status to ${status}`
+    `✅ Admin ${req.user.email} reviewed application ${applicationId} with status ${status}`
   );
 
   res.status(200).json({
     status: "success",
-    message: "Submission status updated successfully",
+    message: "Application submission reviewed successfully",
     data: {
-      submissionId,
-      status,
-      feedback,
-      reviewedAt: submission.reviewedAt,
-      reviewedBy: req.user.name,
+      applicationId,
+      status: application.status,
+      adminReview: application.adminReview,
+      task: application.taskId,
+      user: application.userId,
     },
   });
 });
@@ -520,5 +513,590 @@ export const deleteTask = catchAsync(async (req, res) => {
   res.status(200).json({
     status: "success",
     message: "Task deleted successfully",
+  });
+});
+
+/**
+ * Get all applications across all tasks
+ */
+export const getAllApplications = catchAsync(async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
+  const { status, taskId, userId } = req.query;
+
+  // Build filter object
+  const filter = {};
+  if (status && status !== "all") {
+    filter.status = status;
+  }
+  if (taskId) {
+    filter.taskId = taskId;
+  }
+  if (userId) {
+    filter.userId = userId;
+  }
+
+  const applications = await TaskApplication.find(filter)
+    .populate("userId", "name email username")
+    .populate(
+      "taskId",
+      "title company category difficulty payout status deadline"
+    )
+    .sort({ createdAt: -1 })
+    .skip(skip)
+    .limit(limit);
+
+  const totalApplications = await TaskApplication.countDocuments(filter);
+  const totalPages = Math.ceil(totalApplications / limit);
+
+  logger.info(
+    `📋 Admin ${req.user.email} retrieved ${applications.length} applications`
+  );
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      applications,
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalApplications,
+        hasNext: page < totalPages,
+        hasPrev: page > 1,
+      },
+    },
+  });
+});
+
+/**
+ * Get application details
+ */
+export const getApplicationDetails = catchAsync(async (req, res) => {
+  const { applicationId } = req.params;
+
+  const application = await TaskApplication.findById(applicationId)
+    .populate("userId", "name email username bio skills hourlyRate")
+    .populate(
+      "taskId",
+      "title description company category difficulty payout status deadline requirements"
+    );
+
+  if (!application) {
+    return next(new AppError("Application not found", 404));
+  }
+
+  logger.info(
+    `🔍 Admin ${req.user.email} viewed application details: ${applicationId}`
+  );
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      application,
+    },
+  });
+});
+
+/**
+ * Update application status
+ */
+export const updateApplicationStatus = catchAsync(async (req, res) => {
+  const { applicationId } = req.params;
+  const { status, feedback } = req.body;
+
+  const validStatuses = [
+    "pending",
+    "accepted",
+    "rejected",
+    "completed",
+    "cancelled",
+  ];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({
+      status: "error",
+      message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+    });
+  }
+
+  const application = await TaskApplication.findById(applicationId)
+    .populate("taskId", "title")
+    .populate("userId", "name email");
+
+  if (!application) {
+    return res.status(404).json({
+      status: "error",
+      message: "Application not found",
+    });
+  }
+
+  // Update application status
+  application.status = status;
+  if (feedback) {
+    application.feedback = {
+      comment: feedback,
+      providedAt: new Date(),
+    };
+  }
+
+  // If accepted, update task to mark user as assigned
+  if (status === "accepted") {
+    await Task.findByIdAndUpdate(application.taskId._id, {
+      assignedTo: application.userId._id,
+      status: "in_progress",
+    });
+  }
+
+  await application.save();
+
+  logger.info(
+    `✅ Admin ${req.user.email} updated application ${applicationId} to ${status}`
+  );
+
+  res.status(200).json({
+    status: "success",
+    message: "Application status updated successfully",
+    data: {
+      application,
+    },
+  });
+});
+
+/**
+ * Bulk update application status
+ */
+export const bulkUpdateApplicationStatus = catchAsync(async (req, res) => {
+  const { applicationIds, status, feedback } = req.body;
+
+  const validStatuses = [
+    "pending",
+    "accepted",
+    "rejected",
+    "completed",
+    "cancelled",
+  ];
+  if (!validStatuses.includes(status)) {
+    return res.status(400).json({
+      status: "error",
+      message: `Invalid status. Must be one of: ${validStatuses.join(", ")}`,
+    });
+  }
+
+  if (
+    !applicationIds ||
+    !Array.isArray(applicationIds) ||
+    applicationIds.length === 0
+  ) {
+    return res.status(400).json({
+      status: "error",
+      message: "Application IDs are required",
+    });
+  }
+
+  const applications = await TaskApplication.find({
+    _id: { $in: applicationIds },
+  })
+    .populate("taskId", "title")
+    .populate("userId", "name email");
+
+  if (applications.length === 0) {
+    return res.status(404).json({
+      status: "error",
+      message: "No applications found",
+    });
+  }
+
+  // Update all applications
+  for (const application of applications) {
+    application.status = status;
+    if (feedback) {
+      application.feedback = {
+        comment: feedback,
+        providedAt: new Date(),
+      };
+    }
+
+    // If accepted, update task to mark user as assigned
+    if (status === "accepted") {
+      await Task.findByIdAndUpdate(application.taskId._id, {
+        assignedTo: application.userId._id,
+        status: "in_progress",
+      });
+    }
+
+    await application.save();
+  }
+
+  logger.info(
+    `✅ Admin ${req.user.email} bulk updated ${applications.length} applications to ${status}`
+  );
+
+  res.status(200).json({
+    status: "success",
+    message: `${applications.length} applications updated successfully`,
+    data: {
+      updatedCount: applications.length,
+      status,
+    },
+  });
+});
+
+/**
+ * Get user details with applications
+ */
+export const getUserDetails = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+
+  const user = await User.findById(userId).select("-password -sessions");
+  if (!user) {
+    return res.status(404).json({
+      status: "error",
+      message: "User not found",
+    });
+  }
+
+  // Get user's applications
+  const applications = await TaskApplication.find({ userId })
+    .populate(
+      "taskId",
+      "title company category difficulty payout status deadline"
+    )
+    .sort({ createdAt: -1 });
+
+  // Get user's application stats
+  const stats = {
+    total: applications.length,
+    pending: applications.filter((app) => app.status === "pending").length,
+    accepted: applications.filter((app) => app.status === "accepted").length,
+    rejected: applications.filter((app) => app.status === "rejected").length,
+    completed: applications.filter((app) => app.status === "completed").length,
+  };
+
+  logger.info(`🔍 Admin ${req.user.email} viewed user details: ${userId}`);
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      user,
+      applications,
+      stats,
+    },
+  });
+});
+
+/**
+ * Update user details
+ */
+export const updateUserDetails = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+  const { name, email, role, isActive } = req.body;
+
+  const user = await User.findById(userId);
+  if (!user) {
+    return res.status(404).json({
+      status: "error",
+      message: "User not found",
+    });
+  }
+
+  // Update user fields
+  if (name) user.name = name;
+  if (email) user.email = email;
+  if (role) user.role = role;
+  if (typeof isActive === "boolean") user.isActive = isActive;
+
+  await user.save();
+
+  logger.info(`✅ Admin ${req.user.email} updated user: ${userId}`);
+
+  res.status(200).json({
+    status: "success",
+    message: "User updated successfully",
+    data: {
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        isActive: user.isActive,
+      },
+    },
+  });
+});
+
+/**
+ * Get task details with applications
+ */
+export const getTaskDetails = catchAsync(async (req, res) => {
+  const { taskId } = req.params;
+
+  const task = await Task.findById(taskId)
+    .populate("clientId", "name email")
+    .populate("assignedTo", "name email");
+
+  if (!task) {
+    return res.status(404).json({
+      status: "error",
+      message: "Task not found",
+    });
+  }
+
+  // Get task applications
+  const applications = await TaskApplication.find({ taskId })
+    .populate("userId", "name email username bio skills hourlyRate")
+    .sort({ createdAt: -1 });
+
+  // Get application stats for this task
+  const applicationStats = {
+    total: applications.length,
+    pending: applications.filter((app) => app.status === "pending").length,
+    accepted: applications.filter((app) => app.status === "accepted").length,
+    rejected: applications.filter((app) => app.status === "rejected").length,
+    completed: applications.filter((app) => app.status === "completed").length,
+  };
+
+  logger.info(`🔍 Admin ${req.user.email} viewed task details: ${taskId}`);
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      task,
+      applications,
+      applicationStats,
+    },
+  });
+});
+
+/**
+ * Update task details
+ */
+export const updateTaskDetails = catchAsync(async (req, res) => {
+  const { taskId } = req.params;
+  const updateData = req.body;
+
+  const task = await Task.findById(taskId);
+  if (!task) {
+    return res.status(404).json({
+      status: "error",
+      message: "Task not found",
+    });
+  }
+
+  // Update task fields
+  Object.keys(updateData).forEach((key) => {
+    if (updateData[key] !== undefined) {
+      task[key] = updateData[key];
+    }
+  });
+
+  await task.save();
+
+  logger.info(`✅ Admin ${req.user.email} updated task: ${taskId}`);
+
+  res.status(200).json({
+    status: "success",
+    message: "Task updated successfully",
+    data: {
+      task,
+    },
+  });
+});
+
+/**
+ * Get admin activity logs
+ */
+export const getAdminActivityLogs = catchAsync(async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 20;
+  const skip = (page - 1) * limit;
+
+  // This would typically come from a dedicated audit log collection
+  // For now, we'll return a placeholder response
+  const logs = [
+    {
+      id: "1",
+      adminId: req.user._id,
+      adminName: req.user.name,
+      action: "UPDATE_APPLICATION_STATUS",
+      entityType: "application",
+      entityId: "app123",
+      details: "Changed status from pending to accepted",
+      timestamp: new Date(),
+    },
+    // Add more log entries as needed
+  ];
+
+  logger.info(`📋 Admin ${req.user.email} retrieved activity logs`);
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      logs,
+      pagination: {
+        currentPage: page,
+        totalPages: 1,
+        totalLogs: logs.length,
+        hasNext: false,
+        hasPrev: false,
+      },
+    },
+  });
+});
+
+/**
+ * Get platform analytics
+ */
+export const getPlatformAnalytics = catchAsync(async (req, res) => {
+  const { period = "30d" } = req.query;
+
+  let dateFilter = {};
+  const now = new Date();
+
+  switch (period) {
+    case "7d":
+      dateFilter = {
+        createdAt: { $gte: new Date(now - 7 * 24 * 60 * 60 * 1000) },
+      };
+      break;
+    case "30d":
+      dateFilter = {
+        createdAt: { $gte: new Date(now - 30 * 24 * 60 * 60 * 1000) },
+      };
+      break;
+    case "90d":
+      dateFilter = {
+        createdAt: { $gte: new Date(now - 90 * 24 * 60 * 60 * 1000) },
+      };
+      break;
+    default:
+      dateFilter = {};
+  }
+
+  // User registration analytics
+  const userRegistrations = await User.aggregate([
+    { $match: dateFilter },
+    {
+      $group: {
+        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+
+  // Task creation analytics
+  const taskCreations = await Task.aggregate([
+    { $match: dateFilter },
+    {
+      $group: {
+        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+        count: { $sum: 1 },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+
+  // Application analytics
+  const applicationStats = await TaskApplication.aggregate([
+    { $match: dateFilter },
+    {
+      $group: {
+        _id: "$status",
+        count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  // Category analytics
+  const categoryStats = await Task.aggregate([
+    {
+      $group: {
+        _id: "$category",
+        count: { $sum: 1 },
+        avgPayout: { $avg: "$payout" },
+      },
+    },
+    { $sort: { count: -1 } },
+  ]);
+
+  logger.info(`📊 Admin ${req.user.email} retrieved platform analytics`);
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      period,
+      userRegistrations,
+      taskCreations,
+      applicationStats,
+      categoryStats,
+    },
+  });
+});
+
+/**
+ * Get all applications with submitted files for admin review
+ */
+export const getSubmittedApplications = catchAsync(async (req, res) => {
+  const { page = 1, limit = 10, status = "submitted" } = req.query;
+
+  const query = {
+    submissions: { $exists: true, $ne: [] },
+  };
+
+  if (status) {
+    query.status = status;
+  }
+
+  const applications = await TaskApplication.find(query)
+    .populate("taskId", "title category payout clientId")
+    .populate("userId", "name email profileImage")
+    .sort({ updatedAt: -1 })
+    .limit(limit * 1)
+    .skip((page - 1) * limit);
+
+  const total = await TaskApplication.countDocuments(query);
+
+  logger.info(
+    `📋 Admin ${req.user.email} retrieved ${applications.length} submitted applications (page ${page})`
+  );
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      applications,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      total,
+    },
+  });
+});
+
+/**
+ * Get application details with all submissions
+ */
+export const getApplicationSubmissionDetails = catchAsync(async (req, res) => {
+  const { applicationId } = req.params;
+
+  const application = await TaskApplication.findById(applicationId)
+    .populate("taskId", "title category payout clientId description")
+    .populate("userId", "name email profileImage")
+    .populate("adminReview.reviewedBy", "name email");
+
+  if (!application) {
+    return res.status(404).json({
+      status: "error",
+      message: "Application not found",
+    });
+  }
+
+  logger.info(
+    `📋 Admin ${req.user.email} retrieved application details for ${applicationId}`
+  );
+
+  res.status(200).json({
+    status: "success",
+    data: {
+      application,
+    },
   });
 });
