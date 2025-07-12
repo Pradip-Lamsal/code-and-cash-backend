@@ -261,6 +261,26 @@ taskSchema.methods.canUserApply = function (userId) {
   );
 };
 
+// Middleware to log errors during save
+taskSchema.post("save", function (error, doc, next) {
+  if (error.name === "ValidationError") {
+    console.error("Validation Error while saving Task:", error);
+  } else {
+    console.error("Error while saving Task:", error);
+  }
+  next(error);
+});
+
+// Middleware to log errors during update
+taskSchema.post("findOneAndUpdate", function (error, doc, next) {
+  if (error.name === "ValidationError") {
+    console.error("Validation Error during Task update:", error);
+  } else {
+    console.error("Error during Task update:", error);
+  }
+  next(error);
+});
+
 const Task = mongoose.model("Task", taskSchema);
 
 export default Task;

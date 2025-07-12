@@ -350,73 +350,104 @@ export const getTaskStats = catchAsync(async (req, res, next) => {
 });
 
 /**
- * Get a single task by ID (supports both MongoDB ObjectId and numeric taskId)
+ * Get a single task by ID (MongoDB ObjectId only)
  */
 export const getTaskById = catchAsync(async (req, res, next) => {
   const { id } = req.params;
 
-  let task;
-
   // Check if the ID is a valid MongoDB ObjectId (24 hex characters)
-  if (/^[0-9a-fA-F]{24}$/.test(id)) {
-    // It's a MongoDB ObjectId
-    task = await Task.findById(id)
-      .populate("clientId", "name email avatar")
-      .populate("applicants", "name email avatar")
-      .populate("assignedTo", "name email avatar");
-  } else if (/^\d+$/.test(id)) {
-    // It's a numeric taskId
-    task = await Task.findByTaskId(parseInt(id))
-      .populate("clientId", "name email avatar")
-      .populate("applicants", "name email avatar")
-      .populate("assignedTo", "name email avatar");
-  } else {
+  if (!/^[0-9a-fA-F]{24}$/.test(id)) {
     return next(new AppError("Invalid task ID format", 400));
   }
+
+  const task = await Task.findById(id)
+    .populate("clientId", "name email avatar")
+    .populate("applicants.user", "name email avatar")
+    .populate("assignedTo", "name email avatar");
 
   if (!task) {
     return next(new AppError("Task not found", 404));
   }
 
-  // Transform task for frontend
-  const transformedTask = {
-    id: task._id,
-    title: task.title,
-    description: task.description,
-    company: task.company,
-    category: task.category,
-    difficulty: task.difficulty,
-    payout: task.payout,
-    duration: task.duration,
-    status: task.status,
-    skills: task.skills || [],
-    requirements: task.requirements || [],
-    tags: task.tags || [],
-    createdAt: task.createdAt,
-    updatedAt: task.updatedAt,
-    deadline: task.deadline,
-    featured: task.featured,
-    client: task.clientId,
-    applicants: task.applicants || [],
-    applicantCount: task.applicants?.length || 0,
-    assignedTo: task.assignedTo,
-    attachments: task.attachments || [],
-    daysUntilDeadline: task.deadline
-      ? Math.ceil(
-          (new Date(task.deadline) - new Date()) / (1000 * 60 * 60 * 24)
-        )
-      : null,
+  // Helper function to format dates
+  const formatDate = (date) => {
+    if (!date) return "";
+    const now = new Date();
+    const taskDate = new Date(date);
+    const diffTime = Math.abs(now - taskDate);
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays === 0) return "Today";
+    if (diffDays === 1) return "1 day ago";
+    if (diffDays <= 7) return `${diffDays} days ago`;
+    return taskDate.toISOString().split("T")[0];
   };
 
-  // Only include taskId if it exists
-  if (task.taskId !== undefined && task.taskId !== null) {
-    transformedTask.taskId = task.taskId;
-  }
+  // Helper function to format deadline
+  const formatDeadline = (deadline) => {
+    if (!deadline) return "";
+    const now = new Date();
+    const deadlineDate = new Date(deadline);
+    const diffTime = deadlineDate - now;
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays <= 0) return "Expired";
+    if (diffDays === 1) return "1 day";
+    return `${diffDays} days`;
+  };
+
+  // Generate company logo from company name
+  const generateCompanyLogo = (companyName) => {
+    if (!companyName) return "??";
+    const words = companyName.split(" ");
+    if (words.length >= 2) {
+      return (words[0][0] + words[1][0]).toUpperCase();
+    }
+    return companyName.substring(0, 2).toUpperCase();
+  };
+
+  // Transform task for frontend with required structure
+  const transformedTask = {
+    _id: task._id.toString(),
+    title: task.title || "",
+    company: task.company || "",
+    companyLogo: generateCompanyLogo(task.company),
+    postedDate: formatDate(task.createdAt),
+    deadline: formatDeadline(task.deadline),
+    location: "Remote",
+    estimatedTime: task.duration ? `${task.duration} days` : "",
+    applicants: `${task.applicants?.length || 0} developers`,
+    payout: task.payout || 0,
+    difficulty:
+      task.difficulty === "easy"
+        ? "Easy"
+        : task.difficulty === "medium"
+        ? "Medium"
+        : task.difficulty === "hard"
+        ? "Hard"
+        : "Medium",
+    urgency: task.featured ? "High" : "Medium",
+    category: task.category
+      ? task.category.charAt(0).toUpperCase() + task.category.slice(1)
+      : "",
+    overview: task.description || "",
+    requirements: task.requirements || [],
+    deliverables: [
+      "Complete source code",
+      "Documentation",
+      "Testing and quality assurance",
+    ],
+    requiredSkills: task.skills || [],
+    benefits: [
+      "Work with cutting-edge technology",
+      "Flexible working hours",
+      "Portfolio addition",
+      "Professional development",
+    ],
+  };
 
   res.status(200).json({
-    success: true,
-    message: "Task retrieved successfully",
-    data: { task: transformedTask },
+    task: transformedTask,
   });
 });
 
