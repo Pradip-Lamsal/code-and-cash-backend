@@ -16,8 +16,23 @@ export const applyToTask = catchAsync(async (req, res, next) => {
   const { message } = req.body;
   const userId = req.user._id;
 
-  // Check if task exists and is available
-  const task = await Task.findById(taskId);
+  // Check if task exists and is available - handle both ObjectId and numeric ID
+  let task;
+  const mongoose = await import("mongoose");
+
+  if (mongoose.default.Types.ObjectId.isValid(taskId)) {
+    task = await Task.findById(taskId);
+  } else {
+    // For numeric IDs, you need to have tasks with an 'id' field or use a different lookup
+    // Since your model doesn't have a numeric 'id' field, this will fail
+    return next(
+      new AppError(
+        "Invalid task ID format. Please use a valid task identifier.",
+        400
+      )
+    );
+  }
+
   if (!task) {
     return next(new AppError("Task not found", 404));
   }
