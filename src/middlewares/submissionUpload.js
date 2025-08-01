@@ -64,11 +64,11 @@ const submissionUpload = multer({
   },
 });
 
-// Middleware for multiple file uploads (task submissions)
-export const uploadTaskSubmission = submissionUpload.array("submissions", 5);
+// Middleware for multiple file uploads (task submissions) with any field name
+export const uploadTaskSubmission = submissionUpload.any();
 
 // Middleware for single file upload (task submissions)
-export const uploadSingleTaskSubmission = submissionUpload.single("submission");
+export const uploadSingleTaskSubmission = submissionUpload.any();
 
 // Error handling middleware for submission uploads
 export const handleSubmissionUploadError = (error, req, res, next) => {
