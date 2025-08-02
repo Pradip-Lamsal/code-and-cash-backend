@@ -2,6 +2,7 @@ import {
   deleteUploadedFile,
   getFilesInfo,
 } from "../middlewares/submissionUpload.js";
+import CompletedTask from "../models/CompletedTask.js";
 import Task from "../models/Task.js";
 import TaskApplication from "../models/TaskApplication.js";
 import AppError from "../utils/appError.js";
@@ -291,7 +292,9 @@ export const submitFiles = catchAsync(async (req, res, next) => {
   const application = await TaskApplication.findOne({
     _id: applicationId,
     userId,
-  });
+  })
+    .populate("userId", "name username")
+    .populate("taskId", "title");
 
   if (!application) {
     return next(new AppError("Application not found", 404));
@@ -311,8 +314,12 @@ export const submitFiles = catchAsync(async (req, res, next) => {
     application.submissions.push(...fileInfo);
 
     // Update status to submitted when files are uploaded
+    let markCompleted = false;
     if (application.status === "accepted") {
       application.status = "submitted";
+      // If you want to mark as completed immediately, set to "completed" here and set markCompleted = true
+      // application.status = "completed";
+      // markCompleted = true;
     }
 
     // Update progress if this is the first submission
@@ -321,6 +328,29 @@ export const submitFiles = catchAsync(async (req, res, next) => {
     }
 
     await application.save();
+
+    // If marking as completed, also store in CompletedTask collection
+    if (markCompleted || application.status === "completed") {
+      // Store each file as a separate completed task record
+      for (const file of fileInfo) {
+        await CompletedTask.create({
+          userId: application.userId._id || application.userId,
+          username:
+            application.userId.name || application.userId.username || "",
+          taskId: application.taskId._id || application.taskId,
+          taskName: application.taskId.title || "",
+          file: {
+            filename: file.filename,
+            originalName: file.originalName,
+            path: file.path,
+            size: file.size,
+            mimetype: file.mimetype,
+            uploadedAt: file.uploadedAt,
+          },
+          submittedAt: file.uploadedAt || new Date(),
+        });
+      }
+    }
 
     res.status(200).json({
       success: true,

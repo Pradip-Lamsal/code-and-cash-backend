@@ -1,5 +1,4 @@
 import mongoose from "mongoose";
-
 const taskApplicationSchema = new mongoose.Schema(
   {
     userId: {

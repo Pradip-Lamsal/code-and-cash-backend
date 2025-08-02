@@ -13,6 +13,7 @@ import {
   getAllUsers,
   getApplicationDetails,
   getApplicationSubmissionDetails,
+  getCompletedTasks,
   getPlatformAnalytics,
   getSubmittedApplications,
   getTaskDetails,
@@ -165,5 +166,8 @@ router.get(
   adminAuth,
   downloadSubmissionFile
 );
+
+// New route to get completed tasks
+router.get("/completed-tasks", adminAuth, getCompletedTasks);
 
 export default router;

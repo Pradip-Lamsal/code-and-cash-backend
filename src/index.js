@@ -17,6 +17,7 @@ import { logger } from "./utils/logger.js";
 import adminRouter from "./routes/admin.js";
 import applicationRouter from "./routes/applications.js";
 import authRouter from "./routes/auth.js";
+import completedTaskRouter from "./routes/completedTask.js";
 import profileRouter from "./routes/profile.js";
 import taskRouter from "./routes/tasks.js";
 
@@ -64,6 +65,7 @@ app.use("/api/profile", profileRouter);
 app.use("/api/tasks", taskRouter);
 app.use("/api/applications", applicationRouter);
 app.use("/api/admin", adminRouter);
+app.use("/api/completed-tasks", completedTaskRouter);
 
 // Health check route
 app.get("/health", (req, res) => {

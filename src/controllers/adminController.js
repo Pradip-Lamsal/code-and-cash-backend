@@ -8,6 +8,38 @@ import AppError from "../utils/appError.js";
 import catchAsync from "../utils/catchAsync.js";
 import { logger } from "../utils/logger.js";
 
+/**
+ * Get all completed tasks with user and file info (for admin dashboard)
+ */
+export const getCompletedTasks = catchAsync(async (req, res) => {
+  // Pagination
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 20;
+  const skip = (page - 1) * limit;
+
+  const [completedApps, total] = await Promise.all([
+    TaskApplication.find({ status: "completed" })
+      .populate("userId", "name email")
+      .populate("taskId", "title")
+      .select("userId taskId submissions status updatedAt")
+      .sort({ updatedAt: -1 })
+      .skip(skip)
+      .limit(limit),
+    TaskApplication.countDocuments({ status: "completed" }),
+  ]);
+
+  res.status(200).json({
+    status: "success",
+    data: completedApps,
+    pagination: {
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    },
+  });
+});
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -41,11 +73,17 @@ export const getAdminStats = catchAsync(async (req, res) => {
 
   const totalUsers = await User.countDocuments();
   const totalTasks = await Task.countDocuments();
-  const openTasks = await Task.countDocuments({ status: "open" }); // Open tasks
-  const completedTasks = await Task.countDocuments({ status: "completed" });
+  // Count completed tasks (case-insensitive for status)
+  const completedTasks = await Task.countDocuments({
+    status: { $regex: /^completed$/i },
+  });
+  // Count pending tasks (case-insensitive for status)
+  const pendingTasks = await Task.countDocuments({
+    status: { $regex: /^pending$/i },
+  });
 
   console.log(
-    `📊 Stats: Users: ${totalUsers}, Tasks: ${totalTasks}, Open: ${openTasks}, Completed: ${completedTasks}`
+    `📊 Stats: Users: ${totalUsers}, Tasks: ${totalTasks}, Completed: ${completedTasks}, Pending: ${pendingTasks}`
   );
 
   // Get users registered in the last 30 days
@@ -104,8 +142,8 @@ export const getAdminStats = catchAsync(async (req, res) => {
     data: {
       totalUsers,
       totalTasks,
-      openTasks,
       completedTasks,
+      pendingTasks,
       recentUsers,
       recentTasks,
       totalApplications:
@@ -360,6 +398,11 @@ export const reviewApplicationSubmission = catchAsync(async (req, res) => {
   // Update application status based on review
   application.status = status === "accepted" ? "completed" : "needs_revision";
 
+  // If application is now completed, also mark the Task as completed
+  if (application.status === "completed" && application.taskId) {
+    await Task.findByIdAndUpdate(application.taskId, { status: "completed" });
+  }
+
   // Update admin review information
   application.adminReview = {
     reviewedBy: req.user._id,
@@ -519,11 +562,12 @@ export const deleteTask = catchAsync(async (req, res) => {
 /**
  * Get all applications across all tasks
  */
+
 export const getAllApplications = catchAsync(async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
-  const { status, taskId, userId } = req.query;
+  const { status, taskId, userId, search } = req.query;
 
   // Build filter object
   const filter = {};
@@ -536,8 +580,15 @@ export const getAllApplications = catchAsync(async (req, res) => {
   if (userId) {
     filter.userId = userId;
   }
+  if (search) {
+    filter.$or = [
+      { "userId.name": { $regex: search, $options: "i" } },
+      { "taskId.title": { $regex: search, $options: "i" } },
+    ];
+  }
 
   const applications = await TaskApplication.find(filter)
+    .select("+submissions") // Explicitly include submissions
     .populate("userId", "name email username")
     .populate(
       "taskId",
@@ -550,6 +601,42 @@ export const getAllApplications = catchAsync(async (req, res) => {
   const totalApplications = await TaskApplication.countDocuments(filter);
   const totalPages = Math.ceil(totalApplications / limit);
 
+  // Transform applications for frontend consistency
+  const transformedApplications = applications.map((app) => ({
+    id: app._id,
+    applicationId: app._id,
+    status: app.status,
+    appliedAt: app.appliedAt,
+    message: app.message,
+    progress: app.progress,
+    submissionCount: app.submissions?.length || 0,
+    submissions: app.submissions || [], // Ensure submissions is included
+    paymentStatus: app.paymentStatus,
+    expectedDelivery: app.expectedDelivery,
+    actualDelivery: app.actualDelivery,
+    feedback: app.feedback,
+    task: app.taskId
+      ? {
+          id: app.taskId._id,
+          title: app.taskId.title,
+          company: app.taskId.company,
+          category: app.taskId.category,
+          difficulty: app.taskId.difficulty,
+          payout: app.taskId.payout,
+          status: app.taskId.status,
+          deadline: app.taskId.deadline,
+        }
+      : null,
+    user: app.userId
+      ? {
+          id: app.userId._id,
+          name: app.userId.name,
+          email: app.userId.email,
+          username: app.userId.username,
+        }
+      : null,
+  }));
+
   logger.info(
     `📋 Admin ${req.user.email} retrieved ${applications.length} applications`
   );
@@ -557,7 +644,7 @@ export const getAllApplications = catchAsync(async (req, res) => {
   res.status(200).json({
     status: "success",
     data: {
-      applications,
+      applications: transformedApplications,
       pagination: {
         currentPage: page,
         totalPages,
@@ -572,10 +659,11 @@ export const getAllApplications = catchAsync(async (req, res) => {
 /**
  * Get application details
  */
-export const getApplicationDetails = catchAsync(async (req, res) => {
+export const getApplicationDetails = catchAsync(async (req, res, next) => {
   const { applicationId } = req.params;
 
   const application = await TaskApplication.findById(applicationId)
+    .select("+submissions") // Explicitly include submissions
     .populate("userId", "name email username bio skills hourlyRate")
     .populate(
       "taskId",
@@ -586,15 +674,54 @@ export const getApplicationDetails = catchAsync(async (req, res) => {
     return next(new AppError("Application not found", 404));
   }
 
+  // Transform application for frontend consistency
+  const transformedApplication = {
+    id: application._id,
+    applicationId: application._id,
+    status: application.status,
+    appliedAt: application.appliedAt,
+    message: application.message,
+    progress: application.progress,
+    submissionCount: application.submissions?.length || 0,
+    submissions: application.submissions || [], // Ensure submissions is included
+    paymentStatus: application.paymentStatus,
+    expectedDelivery: application.expectedDelivery,
+    actualDelivery: application.actualDelivery,
+    feedback: application.feedback,
+    task: application.taskId
+      ? {
+          id: application.taskId._id,
+          title: application.taskId.title,
+          description: application.taskId.description,
+          company: application.taskId.company,
+          category: application.taskId.category,
+          difficulty: application.taskId.difficulty,
+          payout: application.taskId.payout,
+          status: application.taskId.status,
+          deadline: application.taskId.deadline,
+          requirements: application.taskId.requirements || [],
+        }
+      : null,
+    user: application.userId
+      ? {
+          id: application.userId._id,
+          name: application.userId.name,
+          email: application.userId.email,
+          username: application.userId.username,
+          bio: application.userId.bio,
+          skills: application.userId.skills,
+          hourlyRate: application.userId.hourlyRate,
+        }
+      : null,
+  };
+
   logger.info(
     `🔍 Admin ${req.user.email} viewed application details: ${applicationId}`
   );
 
   res.status(200).json({
     status: "success",
-    data: {
-      application,
-    },
+    data: transformedApplication,
   });
 });
 

@@ -8,6 +8,6 @@ export default {
   jwtSecret: process.env.JWT_SECRET || "super-secret-key",
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "7d",
   jwtRefreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "30d",
-  mongoUri: process.env.MONGO_URI || "mongodb://localhost:27017/code-and-cash",
+  mongoUri: process.env.MONGO_URI || "mongodb://localhost:27017/codeandcashdb",
   maxActiveSessions: parseInt(process.env.MAX_ACTIVE_SESSIONS || "5"),
 };
